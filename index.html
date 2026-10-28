@@ -1,0 +1,451 @@
+# <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Client-Side PDF Text Editor</title>
+
+  <!-- 1. PDF.js (v3.11.174) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+  <!-- 2. PDF-Lib (v1.17.1 - THE REAL VERSION!) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+
+  <style>
+    :root {
+      --bg-main: #0f172a;
+      --bg-surface: #1e293b;
+      --bg-viewport: #334155;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app-layout { display: flex; flex-direction: column; height: 100vh; }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 24px;
+      background-color: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand h1 { font-size: 1.15rem; font-weight: 600; }
+
+    .badge {
+      font-size: 0.75rem;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      background-color: #065f46;
+      color: #34d399;
+      font-weight: 500;
+    }
+
+    .actions { display: flex; gap: 12px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 16px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background-color: var(--primary); color: #fff; }
+    .btn-primary:not(:disabled):hover { background-color: var(--primary-hover); }
+    .btn-secondary { background-color: var(--bg-viewport); color: #fff; }
+    .btn-secondary:not(:disabled):hover { background-color: #475569; }
+    .btn-danger { background-color: transparent; border-color: var(--danger); color: var(--danger); }
+    .btn-danger:not(:disabled):hover { background-color: var(--danger); color: #fff; }
+
+    #fileInput { display: none; }
+
+    .workspace {
+      flex: 1;
+      background-color: var(--bg-viewport);
+      overflow-y: auto;
+      position: relative;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 100px;
+    }
+
+    .empty-icon { font-size: 3rem; margin-bottom: 12px; }
+
+    .pdf-viewer-container { display: flex; flex-direction: column; gap: 32px; }
+
+    .page-container {
+      position: relative;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+      background-color: #ffffff;
+    }
+
+    canvas { display: block; }
+
+    .page-text-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    .text-hitbox {
+      position: absolute;
+      pointer-events: auto;
+      cursor: pointer;
+      border-radius: 2px;
+      background-color: transparent;
+      transition: background-color 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .text-hitbox:hover {
+      background-color: rgba(59, 130, 246, 0.15);
+      outline: 1px dashed #3b82f6;
+    }
+
+    .text-hitbox.is-modified {
+      background-color: #fef08a !important;
+      color: #000000;
+      outline: 1px solid #eab308;
+      padding: 0 2px;
+      z-index: 5;
+    }
+
+    .inline-editor-input {
+      width: 100%;
+      min-width: 60px;
+      height: 100%;
+      border: 1px solid #3b82f6;
+      background-color: #ffffff;
+      color: #000000;
+      font-family: Helvetica, Arial, sans-serif;
+      line-height: 1;
+      padding: 1px 3px;
+      margin: 0;
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+      z-index: 10;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="app-layout">
+    <header class="topbar">
+      <div class="brand">
+        <h1>PDF In-Place Editor</h1>
+        <span class="badge" id="storageStatus">Ready</span>
+      </div>
+      <div class="actions">
+        <label class="btn btn-secondary" for="fileInput">
+          Upload PDF
+          <input type="file" id="fileInput" accept="application/pdf" />
+        </label>
+        <button id="clearDraftBtn" class="btn btn-danger" disabled>Reset Draft</button>
+        <button id="exportBtn" class="btn btn-primary" disabled>Download Edited PDF</button>
+      </div>
+    </header>
+
+    <main class="workspace" id="workspace">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">📄</div>
+        <h3>No Document Loaded</h3>
+        <p>Upload a vector/digital PDF document to begin editing text in place.</p>
+      </div>
+      <div id="pdfViewerContainer" class="pdf-viewer-container hidden"></div>
+    </main>
+  </div>
+
+  <script>
+    // Automatically unregister any old broken Service Workers from earlier
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        for (let reg of registrations) reg.unregister();
+      });
+    }
+
+    const StorageService = {
+      saveDraft(docHash, modifications) {
+        if (!docHash) return;
+        localStorage.setItem('pdf_editor_' + docHash, JSON.stringify({
+          updatedAt: Date.now(),
+          modifications: modifications
+        }));
+      },
+      loadDraft(docHash) {
+        if (!docHash) return null;
+        const val = localStorage.getItem('pdf_editor_' + docHash);
+        return val ? JSON.parse(val) : null;
+      },
+      clearDraft(docHash) {
+        if (docHash) localStorage.removeItem('pdf_editor_' + docHash);
+      }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+      const storageStatus = document.getElementById('storageStatus');
+      const fileInput = document.getElementById('fileInput');
+      const exportBtn = document.getElementById('exportBtn');
+      const clearDraftBtn = document.getElementById('clearDraftBtn');
+      const emptyState = document.getElementById('emptyState');
+      const viewerContainer = document.getElementById('pdfViewerContainer');
+
+      let currentFileBytes = null;
+      let currentPdfDocument = null;
+      let documentFingerprint = null;
+      let modifications = {};
+      const RENDER_SCALE = 1.5;
+
+      fileInput.addEventListener('change', async (event) => {
+        const file = event.target.files[0];
+        if (!file || file.type !== 'application/pdf') return;
+
+        documentFingerprint = `${file.name}_${file.size}_${file.lastModified}`;
+        const arrayBuffer = await file.arrayBuffer();
+        currentFileBytes = new Uint8Array(arrayBuffer);
+
+        const saved = StorageService.loadDraft(documentFingerprint);
+        modifications = saved ? saved.modifications : {};
+
+        storageStatus.textContent = saved ? 'Draft Restored' : 'File Loaded';
+        await renderDocument();
+
+        exportBtn.disabled = false;
+        clearDraftBtn.disabled = false;
+      });
+
+      async function renderDocument() {
+        emptyState.classList.add('hidden');
+        viewerContainer.classList.remove('hidden');
+        viewerContainer.innerHTML = '';
+
+        const loadingTask = pdfjsLib.getDocument({ data: currentFileBytes.slice(0) });
+        currentPdfDocument = await loadingTask.promise;
+
+        for (let pageNum = 1; pageNum <= currentPdfDocument.numPages; pageNum++) {
+          const pageIndex = pageNum - 1;
+          const page = await currentPdfDocument.getPage(pageNum);
+          const viewport = page.getViewport({ scale: RENDER_SCALE });
+
+          const pageContainer = document.createElement('div');
+          pageContainer.className = 'page-container';
+          pageContainer.style.width = `${viewport.width}px`;
+          pageContainer.style.height = `${viewport.height}px`;
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+
+          await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+          pageContainer.appendChild(canvas);
+
+          const overlay = document.createElement('div');
+          overlay.className = 'page-text-overlay';
+
+          const textContent = await page.getTextContent();
+
+          textContent.items.forEach((item, itemIndex) => {
+            if (!item.str || item.str.trim() === '') return;
+
+            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            const fontSizePx = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+            const left = tx[4];
+            const top = tx[5] - fontSizePx;
+            const width = item.width * RENDER_SCALE;
+            const height = fontSizePx;
+
+            const pdfX = item.transform[4];
+            const pdfY = item.transform[5];
+            const pdfWidth = item.width;
+            const pdfFontSize = Math.sqrt(
+              item.transform[0] * item.transform[0] + item.transform[1] * item.transform[1]
+            );
+
+            const pageMods = modifications[pageIndex] || {};
+            const isModified = pageMods[itemIndex] !== undefined;
+
+            const hitBox = document.createElement('div');
+            hitBox.className = 'text-hitbox' + (isModified ? ' is-modified' : '');
+            hitBox.style.left = `${left}px`;
+            hitBox.style.top = `${top}px`;
+            hitBox.style.width = `${Math.max(width, 16)}px`;
+            hitBox.style.height = `${height + 2}px`;
+
+            if (isModified) {
+              hitBox.textContent = pageMods[itemIndex].updated;
+              hitBox.style.fontSize = `${fontSizePx}px`;
+            }
+
+            hitBox.addEventListener('click', () => {
+              if (hitBox.querySelector('input')) return;
+
+              const currentValue = isModified ? pageMods[itemIndex].updated : item.str;
+              hitBox.textContent = '';
+
+              const input = document.createElement('input');
+              input.type = 'text';
+              input.className = 'inline-editor-input';
+              input.value = currentValue;
+              input.style.fontSize = `${fontSizePx}px`;
+
+              const commitChange = () => {
+                const newVal = input.value;
+                if (!modifications[pageIndex]) modifications[pageIndex] = {};
+
+                if (newVal !== item.str) {
+                  modifications[pageIndex][itemIndex] = {
+                    original: item.str,
+                    updated: newVal,
+                    pdfCoords: { x: pdfX, y: pdfY, width: pdfWidth, fontSize: pdfFontSize }
+                  };
+                  hitBox.classList.add('is-modified');
+                  hitBox.textContent = newVal;
+                } else {
+                  delete modifications[pageIndex][itemIndex];
+                  hitBox.classList.remove('is-modified');
+                  hitBox.textContent = '';
+                }
+
+                StorageService.saveDraft(documentFingerprint, modifications);
+                storageStatus.textContent = 'Auto-Saved';
+              };
+
+              input.addEventListener('blur', commitChange);
+              input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') input.blur();
+              });
+
+              hitBox.appendChild(input);
+              input.focus();
+              input.select();
+            });
+
+            overlay.appendChild(hitBox);
+          });
+
+          pageContainer.appendChild(overlay);
+          viewerContainer.appendChild(pageContainer);
+        }
+      }
+
+      function sanitizeForPdf(str) {
+        return str
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2013\u2014]/g, '-')
+          .replace(/[^\x00-\x7F]/g, '');
+      }
+
+      exportBtn.addEventListener('click', async () => {
+        if (!currentFileBytes) return;
+        storageStatus.textContent = 'Compiling...';
+
+        try {
+          const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
+
+          const pdfDoc = await PDFDocument.load(currentFileBytes.slice(0));
+          const pages = pdfDoc.getPages();
+          const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+          Object.keys(modifications).forEach((pageIdxStr) => {
+            const pageIdx = parseInt(pageIdxStr, 10);
+            const targetPage = pages[pageIdx];
+            const pageMods = modifications[pageIdx];
+
+            Object.values(pageMods).forEach((mod) => {
+              const { x, y, width, fontSize } = mod.pdfCoords;
+              const cleanText = sanitizeForPdf(mod.updated);
+
+              // Pure white cover over old text
+              targetPage.drawRectangle({
+                x: x - 2,
+                y: y - 2,
+                width: Math.max(width + 6, 40),
+                height: fontSize + 4,
+                color: rgb(1, 1, 1),
+              });
+
+              // Replacement text
+              targetPage.drawText(cleanText, {
+                x: x,
+                y: y,
+                size: fontSize,
+                font: font,
+                color: rgb(0, 0, 0),
+              });
+            });
+          });
+
+          const modifiedBytes = await pdfDoc.save();
+          const blob = new Blob([modifiedBytes], { type: 'application/pdf' });
+          const downloadUrl = URL.createObjectURL(blob);
+
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          const baseName = documentFingerprint ? documentFingerprint.split('_')[0] : 'document.pdf';
+          a.download = `edited_${baseName}`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(downloadUrl);
+
+          storageStatus.textContent = 'Export Complete';
+        } catch (err) {
+          console.error('Export Error:', err);
+          storageStatus.textContent = 'Export Failed';
+          alert('Export error: ' + err.message);
+        }
+      });
+
+      clearDraftBtn.addEventListener('click', () => {
+        if (!confirm('Discard all local edits for this document?')) return;
+        StorageService.clearDraft(documentFingerprint);
+        modifications = {};
+        renderDocument();
+        storageStatus.textContent = 'Draft Reset';
+      });
+    });
+  </script>
+</body>
+</html>pdf-editor
+"Zero installations. Zero server-side uploads. A pure, high-performance web application for instant PDF editing."
